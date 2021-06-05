@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const cheerio = require('cheerio');
+const { exec } = require('child_process');
 const path = require('path');
 const chalk = require('chalk');
 const yargs = require("yargs");
@@ -61,7 +62,6 @@ function fixFileReferences($, tagName = 'img', refAttrName = 'src') {
         let ref = $(tag).attr(refAttrName);
         if (ref && ref.startsWith(options.absprefix)) {
             ref = ref.replace(options.absprefix, '.').replace(/\\/g, '/');
-            //TODO href paths verify if it exists
             $(tag).attr(refAttrName, ref);
             fixedCounter++;
         }
@@ -108,13 +108,27 @@ function fixPDFViewer($, filesFolder) {
 }
 
 function writeFile(absFilePath, html) {
+    const filePathAttrs = path.parse(absFilePath)
     fs.writeFileSync(absFilePath, html);
+    const pdfFile = path.join(filePathAttrs.dir, filePathAttrs.name + '.pdf');
+    exec(`pandoc "${absFilePath}"  -o "${pdfFile}"`, {cwd: filePathAttrs.dir},
+        (err, stdout, stderr) => {
+        if (err) {
+            console.error(`unable to generate pdf file ${pdfFile}`, err);
+             return;
+        }
+
+        // the *entire* stdout and stderr (buffered)
+        console.log(`${pdfFile} 
+           stdout: ${stdout} 
+           stderr: ${stderr}
+        `);
+    });
     console.log(`file  ${absFilePath} fixed successfully`)
-    //TODO call pandoc `pandoc  PDF\ -\ www.dgb.sep.gob.mx.html   -o /tmp/test2.pdf`
-    //TODO add readme pandoc / latex installation
-    /*
+    /*TODO add readme pandoc / latex installation
       sudo apt install pandoc
       sudo apt-get install texlive-latex-base texlive-fonts-recommended texlive-fonts-extra texlive-latex-extra
+      sudo apt-get install librsvg2-bin
      */
 
     //TODO set generated pdf file attrs to match  note attrs
