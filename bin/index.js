@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 const cheerio = require('cheerio');
-const { exec } = require('child_process');
+const {execSync} = require('child_process');
 const path = require('path');
 const chalk = require('chalk');
 const yargs = require("yargs");
+const {DateTime} = require("luxon");
 const fs = require('fs');
 const orange = chalk.keyword('green').bold;
 const options = yargs
@@ -37,9 +38,19 @@ function extractNoteProps($) {
     const metaTags = $('.html-note meta');
     let meta = {};
     for (const metaTagsKey in metaTags) {
-        const tag = metaTags[metaTagsKey];
-        if (tag.type !== 'tag') continue;
-        meta[$(tag).attr('itemprop')] = $(tag).attr('content');
+        const tagElement = metaTags[metaTagsKey];
+        if (tagElement.type !== 'tag') continue;
+        let propName = $(tagElement).attr('itemprop');
+        if (propName === 'tag') {
+            if (!meta[propName]) {
+                meta['tags'] = [];
+            }
+            meta['tags'].push($(tagElement).attr('content'));
+
+        } else {
+            meta[propName] = $(tagElement).attr('content');
+        }
+
     }
     return meta;
 }
@@ -107,32 +118,36 @@ function fixPDFViewer($, filesFolder) {
     }
 }
 
-function writeFile(absFilePath, html) {
+function execCommand(cmd, cwd) {
+    console.log(`$> ${cmd}`);
+    let stdout = execSync(cmd, {cwd: cwd});
+    console.log(`output: ${stdout}`);
+    return stdout;
+}
+
+/**
+ * Converts a HTML file to PDF using panda
+ * @param htmlFilePathAttrs
+ * @param htmlfileFullPath
+ */
+function createPDF(title, htmlFilePathAttrs, htmlfileFullPath, noteProps) {
+
+    const pdfFile = path.join(htmlFilePathAttrs.dir, htmlFilePathAttrs.name + '.pdf');
+
+    execCommand('pandoc', "${htmlfileFullPath}"  -o "${pdfFile}" --pdf-engine=weasyprint  --metadata title="${title}"`, htmlFilePathAttrs.dir);
+
+    const createdFormated = DateTime.fromISO(noteProps.created).toFormat('yyyyMMddhhmm.ss');
+    execCommand(`touch  -a -m -t ${createdFormated} "${pdfFile}"`, htmlFilePathAttrs.dir);
+
+    const keywords = noteProps.tags ? `-Keywords="${noteProps.tags.join(',')}"` : '';
+    execCommand(`exiftool -overwrite_original_in_place -CreateDate=${noteProps.created} -ModifyDate=${noteProps.modified}  ${keywords} "${pdfFile}"`, htmlFilePathAttrs.dir);
+}
+
+function writeFile(title, absFilePath, html, noteProps) {
     const filePathAttrs = path.parse(absFilePath)
     fs.writeFileSync(absFilePath, html);
-    const pdfFile = path.join(filePathAttrs.dir, filePathAttrs.name + '.pdf');
-    exec(`pandoc "${absFilePath}"  -o "${pdfFile}"`, {cwd: filePathAttrs.dir},
-        (err, stdout, stderr) => {
-        if (err) {
-            console.error(`unable to generate pdf file ${pdfFile}`, err);
-             return;
-        }
-
-        // the *entire* stdout and stderr (buffered)
-        console.log(`${pdfFile} 
-           stdout: ${stdout} 
-           stderr: ${stderr}
-        `);
-    });
+    createPDF(title, filePathAttrs, absFilePath, noteProps);
     console.log(`file  ${absFilePath} fixed successfully`)
-    /*TODO add readme pandoc / latex installation
-      sudo apt install pandoc
-      sudo apt-get install texlive-latex-base texlive-fonts-recommended texlive-fonts-extra texlive-latex-extra
-      sudo apt-get install librsvg2-bin
-     */
-
-    //TODO set generated pdf file attrs to match  note attrs
-
 }
 
 fs.readdir(options.dir, (err, files) => {
@@ -143,7 +158,7 @@ fs.readdir(options.dir, (err, files) => {
         const absFilePath = path.resolve(options.dir, file);
         const filePathAttrs = path.parse(absFilePath)
         const fileAttrs = fs.lstatSync(absFilePath);
-        if (!fileAttrs.isDirectory()) {
+        if (!fileAttrs.isDirectory() || filePathAttrs.ext === ".html") {
             console.log(`file: ${orange(absFilePath)} `);
             const $ = cheerio.load(fs.readFileSync(absFilePath));
             const noteProps = extractNoteProps($);
@@ -159,8 +174,7 @@ fs.readdir(options.dir, (err, files) => {
             fixImages($);
             fixFileReferences($, 'a', 'href');
             fixPDFViewer($, filesFolder);
-            writeFile(absFilePath, $.html());
-            //TODO move all generated PDF files to a folder
+            writeFile(title, absFilePath, $.html(), noteProps);
             stats.files = stats.files + 1;
             if (options.maxfiles !== 0 && options.maxfiles <= stats.files) {
                 break
