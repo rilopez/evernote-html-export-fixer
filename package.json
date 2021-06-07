@@ -1,0 +1,30 @@
+{
+  "name": "evernote-html-export-fixer",
+  "version": "1.0.0",
+  "description": "simple evernote html format export fixer",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "bin": {
+    "evernote-html-to-pdf": "./bin/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rilopez/evernote-html-export-fixer.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/rilopez/evernote-html-export-fixer/issues"
+  },
+  "homepage": "https://github.com/rilopez/evernote-html-export-fixer#readme",
+  "dependencies": {
+    "boxen": "^5.0.1",
+    "chalk": "^4.1.1",
+    "cheerio": "^1.0.0-rc.9",
+    "luxon": "^1.27.0",
+    "shell-quote": "^1.7.2",
+    "yargs": "^17.0.1"
+  }
+}
