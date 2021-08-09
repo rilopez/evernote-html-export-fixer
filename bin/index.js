@@ -26,10 +26,9 @@ const options = yargs
     })
     .option("p", {
         alias: "absprefix",
-        describe: "abs directory prefix,  usually is the destiation path used during evernote export",
+        describe: "the destination path used during evernote export. Evernote uses absolute paths for all img and attachment files",
         type: "string",
         default: "Z:"
-
     })
     .option("e", {
         alias: "pdfengines",
@@ -38,9 +37,15 @@ const options = yargs
         default: "weasyprint,pdflatex"
 
     })
+    .option("o", {
+        alias: "outputformats",
+        describe: "comma separated output formats",
+        type: "string",
+        default: "docx,pdf,png"
+    })
     .argv;
 
-console.log(`loading ${options.dir}`);
+console.log('options:', options);
 
 
 function extractNoteProps($) {
@@ -134,26 +139,32 @@ function execCommand(cmd, cwd) {
     return stdout;
 }
 
-function getPdfFileName(htmlFilePathAttrs) {
-    return path.join(htmlFilePathAttrs.dir, htmlFilePathAttrs.name + '.pdf');
+function getPdfFileName(htmlFilePathAttrs, noteProps) {
+    return path.join(htmlFilePathAttrs.dir, `${noteProps.created} - ${htmlFilePathAttrs.name}.pdf`);
+}
+function getMdFileName(htmlFilePathAttrs, noteProps) {
+    return path.join(htmlFilePathAttrs.dir, `${noteProps.created} - ${htmlFilePathAttrs.name}.md`);
+}
+function getPngFileName(htmlFilePathAttrs, noteProps) {
+    return path.join(htmlFilePathAttrs.dir, `${noteProps.created} - ${htmlFilePathAttrs.name}.png`);
+}
+function getDocxFileName(htmlFilePathAttrs, noteProps) {
+    return path.join(htmlFilePathAttrs.dir, `${noteProps.created} - ${htmlFilePathAttrs.name}.docx`);
 }
 
 /**
  * Converts a HTML file to PDF using panda
- * @param htmlFilePathAttrs
- * @param htmlfileFullPath
+ * @param htmlFilePathAttrs  path.parse(htmlfileFullPath) output
+ * @param htmlfileFullPath full absolute path to HTML file
  */
-function createPDF(title, htmlFilePathAttrs, htmlfileFullPath, noteProps) {
-    const keywords = noteProps.tags ? `-Keywords=${quote([noteProps.tags.join(',')])}` : '';
-    const pdfFile = getPdfFileName(htmlFilePathAttrs);
+function createPDF(title, pdfFile, htmlFilePathAttrs, htmlfileFullPath) {
     const pandocCmd = `pandoc ${quote([htmlfileFullPath])}  -o ${quote([pdfFile])}  --metadata title=${quote([title])}`;
-    const engines= options.pdfengines.split(',');
+    const engines = options.pdfengines.split(',');
     for (const engine of engines) {
         try {
             execCommand(`${pandocCmd} --pdf-engine=${engine}`, htmlFilePathAttrs.dir);
             //const createdFormatted = DateTime.fromISO(noteProps.created).toFormat('yyyyMMddhhmm.ss');
             //execCommand(`touch  -a -m -t ${createdFormatted} ${quote([pdfFile])}`, htmlFilePathAttrs.dir);
-            execCommand(`exiftool -overwrite_original_in_place -CreateDate=${noteProps.created} -ModifyDate=${noteProps.updated}  ${keywords} ${quote([pdfFile])}`, htmlFilePathAttrs.dir);
             break
         } catch (e) {
             console.error(`not able to generate pdf file using ${engine}: ${chalk.bold(pdfFile)}`, e);
@@ -161,11 +172,103 @@ function createPDF(title, htmlFilePathAttrs, htmlfileFullPath, noteProps) {
     }
 }
 
-function writeFile(title, absFilePath, html, noteProps) {
-    const filePathAttrs = path.parse(absFilePath);
-    fs.writeFileSync(absFilePath, html);
-    createPDF(title, filePathAttrs, absFilePath, noteProps);
-    console.log(`file  ${absFilePath} fixed successfully`)
+/**
+ * Converts a HTML file to MD using panda
+ * @param htmlFilePathAttrs  path.parse(htmlfileFullPath) output
+ * @param htmlfileFullPath full absolute path to HTML file
+ */
+function createMD(title, mdFile, htmlFilePathAttrs, htmlfileFullPath, noteProps, pdfFile, pngFile) {
+    const pandocCmd = `pandoc -f html -t markdown_github-raw_html  ${quote([htmlfileFullPath])}  -o ${quote([mdFile])}`;
+    execCommand(`${pandocCmd}`, htmlFilePathAttrs.dir);
+    const hasTags = noteProps.tags && noteProps.tags.length > 0;
+    const markdownLink = (label, link) => {
+        return `[${label}](${link})`;
+    }
+
+    const pdfLink = `${quote([markdownLink('pdf-version', path.relative(htmlFilePathAttrs.dir, pdfFile))])}`;
+    execCommand(`echo ${pdfLink} >> ${quote([mdFile])}`, htmlFilePathAttrs.dir);
+    const pngLink = `${quote([markdownLink('png-version', path.relative(htmlFilePathAttrs.dir, pngFile))])}`;
+    execCommand(`echo ${pngLink} >> ${quote([mdFile])}`, htmlFilePathAttrs.dir);
+    if (hasTags){
+        const tags = `${quote(['1s/^/'+ '#' + noteProps.tags.join(' #') + '\\n/'])}`;
+        execCommand(`sed -i ${tags} ${quote([mdFile])}`, htmlFilePathAttrs.dir);
+    }
+}
+
+
+/**
+ * Converts a HTML file to DOCX using panda
+ * @param htmlFilePathAttrs  path.parse(htmlfileFullPath) output
+ * @param htmlfileFullPath full absolute path to HTML file
+ */
+function createDOCX(title, docxFile, htmlFilePathAttrs, htmlfileFullPath, noteProps) {
+    execCommand(
+        `pandoc ${quote([htmlfileFullPath])}  -o ${quote([docxFile])}  --metadata title=${quote([title])} -V current_date=${quote([noteProps.created])}`,
+        htmlFilePathAttrs.dir);
+}
+
+/**
+ * Converts a HTML file to PNG using chrome
+ * @param htmlFilePathAttrs  path.parse(htmlfileFullPath) output
+ * @param htmlfileFullPath full absolute path to HTML file
+ */
+function createPNG(title, pngFile, htmlFilePathAttrs, htmlfileFullPath) {
+    execCommand(
+        `google-chrome-stable --headless --disable-gpu --window-size=1280,2000 --screenshot=${quote([pngFile])}  ${quote([htmlfileFullPath])}   `,
+        htmlFilePathAttrs.dir);
+}
+
+
+function setFileProps(noteProps, pdfFile, tagProperty='Keywords') {
+    const keywords = noteProps.tags ? `-${tagProperty}=${quote([noteProps.tags.join(',')])}` : '';
+    execCommand(`exiftool -overwrite_original_in_place -CreateDate=${noteProps.created} -ModifyDate=${noteProps.updated}  ${keywords} ${quote([pdfFile])}`);
+}
+
+function convertOtherFormats(title, absFilePath, filePathAttrs, noteProps, statusStr) {
+    const formats = options.outputformats.split(',');
+    const pdfFile = getPdfFileName(filePathAttrs, noteProps);
+    const pngFile = getPngFileName(filePathAttrs, noteProps);
+
+    if (formats.includes('pdf') || formats.includes('md')) {
+        const pdfNotFound = !fs.existsSync(pdfFile);
+        if (pdfNotFound) {
+            createPDF(title, pdfFile, filePathAttrs, absFilePath);
+            setFileProps(noteProps, pdfFile);
+        } else {
+            console.warn(`${statusStr} skipping overwrite because previous PDF found (${pdfFile})`)
+        }
+    }
+
+    if (formats.includes('png') || formats.includes('md')) {
+        const pngNotFound = !fs.existsSync(pngFile);
+        if (pngNotFound) {
+            createPNG(title, pngFile, filePathAttrs, absFilePath);
+            setFileProps(noteProps, pngFile, 'Label');
+        } else {
+            console.warn(`${statusStr} skipping overwrite because previous PNG found (${pngFile})`)
+        }
+    }
+
+    if (formats.includes('md')) {
+        const mdFile = getMdFileName(filePathAttrs, noteProps);
+        const mdNotFound = !fs.existsSync(mdFile);
+        if (mdNotFound) {
+            createMD(title, mdFile, filePathAttrs, absFilePath, noteProps, pdfFile, pngFile);
+        } else {
+            console.warn(`${statusStr} skipping overwrite because previous MD found (${mdFile})`)
+        }
+    }
+
+    if (formats.includes('docx')) {
+        const docxFile = getDocxFileName(filePathAttrs, noteProps);
+        const docxNotFound = !fs.existsSync(docxFile);
+        if (docxNotFound) {
+            createDOCX(title, docxFile, filePathAttrs, absFilePath, noteProps);
+        } else {
+            console.warn(`${statusStr} skipping overwrite because previous DOCX found (${docxFile})`)
+        }
+    }
+
 }
 
 async function processFile(statusStr, absFilePath, filePathAttrs) {
@@ -175,34 +278,37 @@ async function processFile(statusStr, absFilePath, filePathAttrs) {
 
     //TODO do not modify html if tag pre.ril-note-props-json is found
     const $h1 = $('.html-note > h1');
-
-    $('.html-note').append($(`<pre class="ril-note-props-json">${JSON.stringify(noteProps, null, 4)}</pre>`));
     const title = $h1.text().trim()
     const filesFolder = getFilesFolderName(filePathAttrs);
     console.log(`
                title: ${title}
                filesFolder: ${filesFolder}
             `);
-    fixImages($);
-    fixFileReferences($, 'a', 'href');
-    fixPDFViewer($, filesFolder);
-    writeFile(title, absFilePath, $.html(), noteProps);
+    if ($('.html-note pre.note-props-json').length === 0) {
+        $('.html-note').append($(`<pre class="note-props-json">${JSON.stringify(noteProps, null, 4)}</pre>`));
+        fixImages($);
+        fixFileReferences($, 'a', 'href');
+        fixPDFViewer($, filesFolder);
+        fs.writeFileSync(absFilePath, $.html());
+    } else {
+        console.warn(`${statusStr} Skipping html fix because  pre element with class 'note-props-json' found `);
+    }
+
+    convertOtherFormats(title, absFilePath, filePathAttrs, noteProps, statusStr);
+
     return `${statusStr} COMPLETED`;
 }
 
 fs.readdir(options.dir, (err, allFiles) => {
-
     const files = allFiles.filter(f => {
         const absFilePath = path.resolve(options.dir, f);
         const filePathAttrs = path.parse(absFilePath);
         const fileAttrs = fs.lstatSync(absFilePath);
-        const pdfFile = getPdfFileName(filePathAttrs);
         const isHTML = filePathAttrs.ext === ".html";
-        const pdfNotFound = !fs.existsSync(pdfFile);
+
         return (fileAttrs.isFile()
             && filePathAttrs.name !== 'Evernote_index'
             && isHTML
-            && pdfNotFound
         );
     });
 
